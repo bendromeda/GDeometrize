@@ -17,6 +17,12 @@ fn main() {
 
     let target = img.resize(width, height, FilterType::Triangle);
 
+    // spritesheets
+    let sheet1data: serde_json::Value =
+        serde_json::from_str(include_str!("../spritesheets/sheet1.json")).unwrap();
+    let sheet2data: serde_json::Value =
+        serde_json::from_str(include_str!("../spritesheets/sheet2.json")).unwrap();
+
     env_logger::init();
     let event_loop = EventLoop::new();
     //let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -186,10 +192,10 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let img = include_bytes!("../objects/273/main.png");
+        let img = include_bytes!("../spritesheets/sheet2.png");
 
-        let diffuse_texture =
-            texture::Texture::from_bytes(&device, &queue, img, "planet2.png").unwrap();
+        let sheet_texture =
+            texture::Texture::from_bytes(&device, &queue, img, "sheet2.png").unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -214,19 +220,19 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let sheet_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&sheet_texture.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    resource: wgpu::BindingResource::Sampler(&sheet_texture.sampler),
                 },
             ],
-            label: Some("diffuse_bind_group"),
+            label: Some("sheet_bind_group"),
         });
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -329,8 +335,8 @@ impl State {
 
             render_pipeline,
             vertex_buffer,
-            obj_textures: vec![diffuse_texture],
-            bind_group: diffuse_bind_group,
+            obj_textures: vec![sheet_texture],
+            bind_group: sheet_bind_group,
             //size_buffer,
             size_bind_group,
         }
@@ -393,137 +399,22 @@ struct Shape {
     rot: f32,
 }
 
-macro_rules! create_obj_ids {
-    {$symbol:ident, [$($id:literal,)*]} => {
-        pub const $symbol: &[(u16, &[u8])] = &[
-            $(($id, include_bytes!(concat!("../objects/", stringify!($id), "/main.png")))),*
-        ];
-    };
-
-}
-
-create_obj_ids! {
-    OBJ_IDS, [
-        211, 259, 266, 273, 280, 693, 695, 697, 699, 701, 725, 1011, 1012, 1013, 1102, 1106, 1111,
-        1112, 1113, 1114, 1115, 1116, 1117, 1118, 1348, 1351, 1352, 1353, 1354, 1355, 1442, 1443, 1461,
-        1462, 1463, 1464, 1596, 1597, 1608, 1609, 1610, 1753, 1754, 1757, 1764, 1765, 1766, 1767, 1768,
-        1769, 1837, 1835, 1869, 1870, 1871, 1874, 1875, 1886, 1887, 1888,
-    ]
-}
+const OBJ_IDS: &[u16] = &[
+    //211, 259, 266, 273, 280, 693, 695, 697, 699, 701, 725,
+    1011, 1012, 1013, 1102, 1106, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1348, 1351, 1352,
+    1353, 1354, 1355, 1442, 1443, 1461, 1462, 1463, 1464, 1596, 1597, 1608, 1609, 1610, 1753, 1754,
+    1757, 1764, 1765, 1766, 1767, 1768, 1769, 1837, 1835, 1869, 1870, 1871, 1874, 1875, 1886, 1887,
+    1888,
+];
 
 impl Shape {
-    // fn paste(
-    //     &self,
-    //     img: &mut RgbImage,
-    //     obj_imgs: &[ImageBuffer<Rgba<u8>, Vec<u8>>],
-    //     target: &DynamicImage,
-    //     img_alpha: f32,
-    // ) {
-    //     let obj_img = &obj_imgs[self.img_index];
-    //     let width = img.width();
-    //     let height = img.height();
-    //     let obj_width = obj_img.width();
-    //     let obj_height = obj_img.height();
-
-    //     let avg_color = obj_img
-    //         .as_raw()
-    //         .par_chunks(CHUNK_SIZE4)
-    //         .enumerate()
-    //         .map(|(chunk_i, chunk)| {
-    //             let mut sum = ([0.0, 0.0, 0.0], 0u32);
-    //             for i in (0..chunk.len()).step_by(4) {
-    //                 let alpha = chunk[i + 3] as f32 / 255.0;
-    //                 let index = (chunk_i * CHUNK_SIZE + i) / 3;
-    //                 let mut x = (index % obj_width as usize) as f32;
-    //                 let mut y = (index / obj_width as usize) as f32;
-
-    //                 // translate to center
-    //                 x -= obj_width as f32 / 2.0;
-    //                 y -= obj_height as f32 / 2.0;
-
-    //                 let (mut x, mut y) = rotate_point(x, y, -self.rot);
-
-    //                 x += self.x as f32 / self.scale;
-    //                 y += self.y as f32 / self.scale;
-
-    //                 x *= self.scale;
-    //                 y *= self.scale;
-
-    //                 // continue if outside bounds
-    //                 if x < 0.0 || x > width as f32 - 1.0 || y < 0.0 || y > height as f32 - 1.0 {
-    //                     continue;
-    //                 }
-
-    //                 // get image pixel
-    //                 let c = target.get_pixel(x as u32, y as u32);
-    //                 sum.0[0] += c.0[0] as f32 / 255.0 * alpha;
-    //                 sum.0[1] += c.0[1] as f32 / 255.0 * alpha;
-    //                 sum.0[2] += c.0[2] as f32 / 255.0 * alpha;
-    //                 sum.1 += 1;
-    //             }
-    //             sum
-    //         })
-    //         .reduce(
-    //             || ([0.0, 0.0, 0.0], 0),
-    //             |(sum, sc), (next, c)| {
-    //                 (
-    //                     [sum[0] + next[0], sum[1] + next[1], sum[2] + next[2]],
-    //                     sc + c,
-    //                 )
-    //             },
-    //         );
-    //     //dbg!(avg_color);
-    //     let avg_color = avg_color.0.map(|a| a / avg_color.1 as f32);
-    //     //dbg!(avg_color);
-
-    //     img.as_mut()
-    //         .par_chunks_mut(CHUNK_SIZE)
-    //         .enumerate()
-    //         .for_each(|(chunk_i, chunk)| {
-    //             for i in (0..chunk.len()).step_by(3) {
-    //                 let index = (chunk_i * CHUNK_SIZE + i) / 3;
-    //                 let x = (index % width as usize) as u32;
-    //                 let y = (index / width as usize) as u32;
-
-    //                 let mut obj_x = x as f32;
-    //                 let mut obj_y = y as f32;
-    //                 // scale around center
-    //                 obj_x /= self.scale;
-    //                 obj_y /= self.scale;
-    //                 obj_x -= self.x as f32 / self.scale;
-    //                 obj_y -= self.y as f32 / self.scale;
-
-    //                 let (mut obj_x, mut obj_y) = rotate_point(obj_x, obj_y, self.rot);
-    //                 // translate to center
-    //                 obj_x += obj_width as f32 / 2.0;
-    //                 obj_y += obj_height as f32 / 2.0;
-
-    //                 //dbg!((obj_x, obj_y));
-
-    //                 // return if out of bounds
-    //                 if obj_x < 0.0
-    //                     || obj_x >= obj_width as f32
-    //                     || obj_y < 0.0
-    //                     || obj_y >= obj_height as f32
-    //                 {
-    //                     continue;
-    //                 }
-    //                 let obj_pixel = *obj_img.get_pixel(obj_x as u32, obj_y as u32);
-
-    //                 // set pixel
-    //                 let alpha = (obj_pixel[3] as f32 / 255.0) * img_alpha;
-
-    //                 chunk[i] = (obj_pixel[0] as f32 * avg_color[0] * alpha
-    //                     + chunk[i] as f32 * (1.0 - alpha)) as u8;
-    //                 chunk[i + 1] = (obj_pixel[1] as f32 * avg_color[1] * alpha
-    //                     + chunk[i + 1] as f32 * (1.0 - alpha))
-    //                     as u8;
-    //                 chunk[i + 2] = (obj_pixel[2] as f32 * avg_color[2] * alpha
-    //                     + chunk[i + 2] as f32 * (1.0 - alpha))
-    //                     as u8;
-    //             }
-    //         });
-    // }
+    fn paste(&self, img: &mut RgbImage, device: &wgpu::Device, spritesheet: serde_json::Value) {
+        let sprite = &spritesheet["frames"][format!("{}_main.png", OBJ_IDS[self.img_index])];
+        let sprite_x = sprite["frame"]["x"].as_u64().unwrap() as u32;
+        let sprite_y = sprite["frame"]["y"].as_u64().unwrap() as u32;
+        let sprite_w = sprite["frame"]["w"].as_u64().unwrap() as u32;
+        let sprite_h = sprite["frame"]["h"].as_u64().unwrap() as u32;
+    }
 
     fn new_random(width: u32, height: u32, img_index: usize) -> Shape {
         let mut rng = rand::thread_rng();
