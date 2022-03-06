@@ -1,7 +1,7 @@
 // Vertex shader
 
 struct VertexInput {
-    [[location(0)]] position: vec2<u32>;
+    [[location(0)]] position: vec2<i32>;
     [[location(1)]] tex_coords: vec2<f32>;
 };
 
@@ -25,7 +25,7 @@ fn vs_main(
     out.tex_coords = model.tex_coords;
     out.clip_position = vec4<f32>(
         (f32(model.position.x) / f32(size.width)) * 2.0 - 1.0, 
-        (f32(model.position.y) / f32(size.height)) * 2.0 - 1.0,
+        -((f32(model.position.y) / f32(size.height)) * 2.0 - 1.0),
         0.0, 1.0
     );
     return out;
@@ -33,15 +33,21 @@ fn vs_main(
 
 // Fragment shader
 
+struct Tint {
+    tint: vec4<f32>;
+};
+
 [[group(0), binding(0)]]
 var t_diffuse: texture_2d<f32>;
 [[group(0), binding(1)]]
 var s_diffuse: sampler;
+[[group(2), binding(0)]] // 1.
+var<uniform> tint: Tint;
 
 [[stage(fragment)]]
 fn fs_main(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    return color;
+    return color * tint.tint;
 }
  
  
