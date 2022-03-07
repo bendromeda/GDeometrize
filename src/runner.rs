@@ -182,7 +182,7 @@ fn rotate_point(x: f32, y: f32, angle: f32) -> (f32, f32) {
 }
 
 const SHAPES_PER_OBJ: usize = 50;
-const ITERATIONS: usize = 100;
+const ITERATIONS: usize = 5;
 const SHAPES_ADJUSTED: usize = 10;
 const ADJUSTMENTS: usize = 100;
 
@@ -239,7 +239,7 @@ fn main() {
 
     for _ in 0..ITERATIONS {
         let mut shapes = Vec::new();
-        for img_index in 0..obj_imgs.len() {
+        for img_index in 0..20 {
             for _ in 0..SHAPES_PER_OBJ {
                 shapes.push(Shape::new_random(
                     target.width(),

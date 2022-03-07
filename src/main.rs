@@ -2,24 +2,55 @@ use std::{collections::HashMap, io::BufWriter, path::Path};
 
 use image::{imageops::FilterType, DynamicImage, RgbImage, RgbaImage};
 
+use process::TARGET;
 use texture_packer::{
     exporter::ImageExporter, importer::ImageImporter, texture::Texture, TexturePackerConfig,
 };
 use wgpu::{util::DeviceExt, BindGroup};
 
-const TARGET: &str = "planet.jpeg";
+use process::TOTAL_SHAPES;
 
 fn main() {
     pollster::block_on(run())
 }
 
+pub(crate) fn lin(c: f32) -> f32 {
+    if c > 0.04045 {
+        ((c + 0.055) / 1.055).powf(2.4)
+    } else {
+        c / 12.92
+    }
+}
+
 async fn run() {
-    let width = 256 * 3;
+    let width = 512;
     let img = image::open(TARGET).unwrap();
     let aspect_ratio = img.width() as f32 / img.height() as f32;
     let height: u32 = (width as f32 * aspect_ratio) as u32;
 
-    let target = img.resize(width, height, FilterType::Triangle);
+    let mut target = img.resize(width, height, FilterType::Triangle);
+
+    // convert this image from srgb to linear
+
+    if let Some(buf) = target.as_mut_rgba8() {
+        for p in buf.pixels_mut() {
+            let r = lin(p[0] as f32 / 255.0);
+            let g = lin(p[1] as f32 / 255.0);
+            let b = lin(p[2] as f32 / 255.0);
+            p[0] = (r * 255.0) as u8;
+            p[1] = (g * 255.0) as u8;
+            p[2] = (b * 255.0) as u8;
+        }
+    } else if let Some(buf) = target.as_mut_rgb8() {
+        for p in buf.pixels_mut() {
+            let r = lin(p[0] as f32 / 255.0);
+            let g = lin(p[1] as f32 / 255.0);
+            let b = lin(p[2] as f32 / 255.0);
+            p[0] = (r * 255.0) as u8;
+            p[1] = (g * 255.0) as u8;
+            p[2] = (b * 255.0) as u8;
+        }
+    }
 
     // State::new uses async code, so we're going to wait for it to finish
     // The instance is a handle to our GPU
@@ -28,7 +59,7 @@ async fn run() {
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         })
@@ -49,11 +80,104 @@ async fn run() {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         label: None,
     };
-    let texture = device.create_texture(&texture_desc);
-    let texture_view = texture.create_view(&Default::default());
+
+    let output_texture = device.create_texture(&texture_desc);
+    let output_texture_view = output_texture.create_view(&Default::default());
+
+    let temp_texture = device.create_texture(&wgpu::TextureDescriptor {
+        size: wgpu::Extent3d {
+            width: target.width(),
+            height: target.height(),
+            depth_or_array_layers: TOTAL_SHAPES as u32,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        label: None,
+    });
+
+    let temp_texture_view = temp_texture.create_view(&wgpu::TextureViewDescriptor {
+        // dimension: Some(wgpu::TextureViewDimension::D2Array),
+        // base_array_layer: 0,
+        ..Default::default()
+    });
+    let temp_texture =
+        texture::Texture::from_texture(&device, temp_texture, temp_texture_view).unwrap();
+
+    let temp_texture_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("temp_texture_bind_group_layout"),
+        });
+
+    let output_texture =
+        texture::Texture::from_texture(&device, output_texture, output_texture_view).unwrap();
+
+    let output_texture_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("output_texture_bind_group_layout"),
+        });
+
+    let output_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &output_texture_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&output_texture.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&output_texture.sampler),
+            },
+        ],
+        label: Some("output_texture_bind_group"),
+    });
 
     let u32_size = std::mem::size_of::<u32>() as u32;
 
@@ -77,7 +201,7 @@ async fn run() {
     let sheet_texture =
         texture::Texture::from_bytes(&device, &queue, exporter, "sheet.png").unwrap();
 
-    let texture_bind_group_layout =
+    let sheet_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -97,11 +221,11 @@ async fn run() {
                     count: None,
                 },
             ],
-            label: Some("texture_bind_group_layout"),
+            label: Some("sheet_bind_group_layout"),
         });
 
     let sheet_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &texture_bind_group_layout,
+        layout: &sheet_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -110,6 +234,48 @@ async fn run() {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(&sheet_texture.sampler),
+            },
+        ],
+        label: Some("sheet_bind_group"),
+    });
+
+    let target_texture =
+        texture::Texture::from_bytes(&device, &queue, target.clone(), TARGET).unwrap();
+
+    let target_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+
+            label: Some("target_bind_group_layout"),
+        });
+
+    let target_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &target_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&target_texture.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&target_texture.sampler),
             },
         ],
         label: Some("sheet_bind_group"),
@@ -135,7 +301,7 @@ async fn run() {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -155,44 +321,46 @@ async fn run() {
         label: Some("size_bind_group"),
     });
 
-    let tint_uniform = TintUniform { tint: [0.0; 4] };
+    // let tint_uniform = TintUniform {
+    //     tint: [[0.0; 4]; TOTAL_SHAPES],
+    // };
 
-    let tint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Size buffer"),
-        contents: bytemuck::cast_slice(&[tint_uniform]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    // let tint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: Some("Size buffer"),
+    //     contents: bytemuck::cast_slice(&[tint_uniform]),
+    //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    // });
 
-    let tint_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-            label: Some("tint_bind_group_layout"),
-        });
+    // let tint_bind_group_layout =
+    //     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    //         entries: &[wgpu::BindGroupLayoutEntry {
+    //             binding: 0,
+    //             visibility: wgpu::ShaderStages::FRAGMENT,
+    //             ty: wgpu::BindingType::Buffer {
+    //                 ty: wgpu::BufferBindingType::Uniform,
+    //                 has_dynamic_offset: false,
+    //                 min_binding_size: None,
+    //             },
+    //             count: None,
+    //         }],
+    //         label: Some("tint_bind_group_layout"),
+    //     });
 
-    let tint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &tint_bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: tint_buffer.as_entire_binding(),
-        }],
-        label: Some("tint_bind_group"),
-    });
+    // let tint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    //     layout: &tint_bind_group_layout,
+    //     entries: &[wgpu::BindGroupEntry {
+    //         binding: 0,
+    //         resource: tint_buffer.as_entire_binding(),
+    //     }],
+    //     label: Some("tint_bind_group"),
+    // });
 
     let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Render Pipeline Layout"),
         bind_group_layouts: &[
-            &texture_bind_group_layout,
+            &sheet_bind_group_layout,
             &size_bind_group_layout,
-            &tint_bind_group_layout,
+            //&tint_bind_group_layout,
         ],
         push_constant_ranges: &[],
     });
@@ -236,20 +404,85 @@ async fn run() {
         // indicates how many array layers the attachments will have.
         multiview: None,
     });
+    // cls on windows btw
+    // yes rn at least
+    // because its doing two slopes
+    // like |/| two triangles yes look in output.png if its updated
+    // oh is it pasting slope objects understandable
+
+    let diff_storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Diff Storage Buffer"),
+        contents: bytemuck::cast_slice(&[DiffBuffer {
+            diff: [0; TOTAL_SHAPES],
+        }]),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::MAP_READ,
+    });
+
+    let diff_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("diff_bind_group_layout"),
+        });
+
+    let diff_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &diff_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: diff_storage_buffer.as_entire_binding(),
+        }],
+        label: Some("diff_bind_group"),
+    });
+
+    let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[
+            &target_bind_group_layout,
+            &temp_texture_bind_group_layout,
+            &size_bind_group_layout,
+            &diff_bind_group_layout,
+        ],
+        push_constant_ranges: &[],
+    });
+
+    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Compute Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &shader,
+        entry_point: "cmp_main",
+    });
 
     let state = State {
         device,
         queue,
         render_pipeline,
+        compute_pipeline,
         size_bind_group,
         sheet_bind_group,
-        view: texture_view,
+        target_bind_group,
+
         sheet_size: [packer.width(), packer.height()],
         packer: packer.get_frames().clone(),
-
-        tint_uniform,
-        tint_bind_group,
-        tint_buffer,
+        size_uniform,
+        // tint_uniform,
+        // tint_bind_group,
+        // tint_buffer,
+        output_texture,
+        output_texture_bind_group,
+        diff_storage_buffer,
+        diff_bind_group,
+        temp_texture,
+        temp_texture_bind_group_layout,
     };
 
     let mut encoder = state
@@ -260,7 +493,7 @@ async fn run() {
         let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[wgpu::RenderPassColorAttachment {
-                view: &state.view,
+                view: &state.output_texture.view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -286,12 +519,7 @@ async fn run() {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
-            aspect: wgpu::TextureAspect::All,
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-        },
+        state.output_texture.texture.as_image_copy(),
         wgpu::ImageCopyBuffer {
             buffer: &output_buffer,
             layout: wgpu::ImageDataLayout {
@@ -324,19 +552,32 @@ async fn run() {
     output_buffer.unmap();
 }
 
+mod image_diff;
+
 pub struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     render_pipeline: wgpu::RenderPipeline,
+    compute_pipeline: wgpu::ComputePipeline,
     size_bind_group: wgpu::BindGroup,
     sheet_bind_group: wgpu::BindGroup,
-    view: wgpu::TextureView,
+    target_bind_group: wgpu::BindGroup,
+    //view: wgpu::TextureView,
     sheet_size: [u32; 2],
     packer: HashMap<u16, texture_packer::Frame<u16>>,
 
-    tint_uniform: TintUniform,
-    tint_buffer: wgpu::Buffer,
-    tint_bind_group: wgpu::BindGroup,
+    // tint_uniform: TintUniform,
+    // tint_buffer: wgpu::Buffer,
+    // tint_bind_group: wgpu::BindGroup,
+    size_uniform: SizeUniform,
+
+    output_texture: texture::Texture,
+    output_texture_bind_group: wgpu::BindGroup,
+    diff_storage_buffer: wgpu::Buffer,
+    diff_bind_group: wgpu::BindGroup,
+
+    temp_texture: texture::Texture,
+    temp_texture_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 mod process;
@@ -346,11 +587,12 @@ use process::OPACITY;
 struct Vertex {
     position: [i32; 2],
     tex_coords: [f32; 2],
+    tint: [f32; 4],
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Sint32x2, 1 => Float32x2];
+    const ATTRIBS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Sint32x2, 1 => Float32x2, 2 => Float32x4];
 
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         use std::mem;
@@ -373,10 +615,22 @@ struct SizeUniform {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone)]
 struct TintUniform {
-    tint: [f32; 4],
+    tint: [[f32; 4]; TOTAL_SHAPES],
 }
+
+unsafe impl bytemuck::Zeroable for TintUniform {}
+unsafe impl bytemuck::Pod for TintUniform {}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DiffBuffer {
+    diff: [u32; TOTAL_SHAPES],
+}
+
+unsafe impl bytemuck::Zeroable for DiffBuffer {}
+unsafe impl bytemuck::Pod for DiffBuffer {}
 
 // square with our texture
 // const VERTICES: &[Vertex] = &[
