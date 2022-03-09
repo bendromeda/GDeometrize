@@ -4,10 +4,10 @@ use wgpu::Origin3d;
 
 use crate::{image_diff, shape::*, State};
 
-pub const OPACITY: f32 = 0.5;
+pub const OPACITY: f32 = 1.0;
 
 const SHAPES_PER_OBJ: usize = 4;
-const ITERATIONS: usize = 400;
+const ITERATIONS: usize = 1000;
 // const SHAPES_ADJUSTED: usize = 10;
 // const ADJUSTMENTS: usize = 100;
 
@@ -35,9 +35,10 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage) {
                 shapes.push(shape);
             }
         }
+
         //dbg!(&shapes);
         let diff = test_diff(state, &shapes, target, spritesheet);
-        //dbg!(&diff);
+
         // get index of min diff
         let mut min_diff_index = 0;
         for i in 0..shapes.len() {
@@ -77,6 +78,19 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage) {
 
         state.queue.submit(std::iter::once(encoder.finish()));
     }
+
+    // pollster::block_on(async {
+    //     let buffer_slice = state.tint_buffer.slice(..);
+
+    //     let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
+    //     state.device.poll(wgpu::Maintain::Wait);
+    //     mapping.await.unwrap();
+
+    //     let data: crate::TintBuffer =
+    //         *bytemuck::from_bytes(&buffer_slice.get_mapped_range().to_vec());
+    //     state.tint_buffer.unmap();
+    //     dbg!(&data);
+    // });
 
     // for _ in 0..ITERATIONS {
     //     let mut min_shape = Shape::new_random(target.width(), target.height(), 0);

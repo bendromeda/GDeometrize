@@ -23,7 +23,8 @@ pub(crate) fn lin(c: f32) -> f32 {
 }
 
 async fn run() {
-    let width = 512;
+    env_logger::init();
+    let width = 256;
     let img = image::open(TARGET).unwrap();
     let aspect_ratio = img.width() as f32 / img.height() as f32;
     let height: u32 = (width as f32 * aspect_ratio) as u32;
@@ -66,7 +67,16 @@ async fn run() {
         .await
         .unwrap();
     let (device, queue) = adapter
-        .request_device(&Default::default(), None)
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                limits: wgpu::Limits {
+                    max_texture_array_layers: 2048,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -247,7 +257,7 @@ async fn run() {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -257,7 +267,7 @@ async fn run() {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -321,46 +331,103 @@ async fn run() {
         label: Some("size_bind_group"),
     });
 
-    // let tint_uniform = TintUniform {
-    //     tint: [[0.0; 4]; TOTAL_SHAPES],
-    // };
+    let tint_uniform = TintBuffer {
+        tint: [[0, 0, 0]; TOTAL_SHAPES],
+        counts: [0; TOTAL_SHAPES],
+        opacity: OPACITY,
+    };
 
-    // let tint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: Some("Size buffer"),
-    //     contents: bytemuck::cast_slice(&[tint_uniform]),
-    //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    // });
+    let tint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Size buffer"),
+        contents: bytemuck::cast_slice(&[tint_uniform]),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::MAP_READ,
+    });
 
-    // let tint_bind_group_layout =
-    //     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-    //         entries: &[wgpu::BindGroupLayoutEntry {
-    //             binding: 0,
-    //             visibility: wgpu::ShaderStages::FRAGMENT,
-    //             ty: wgpu::BindingType::Buffer {
-    //                 ty: wgpu::BufferBindingType::Uniform,
-    //                 has_dynamic_offset: false,
-    //                 min_binding_size: None,
-    //             },
-    //             count: None,
-    //         }],
-    //         label: Some("tint_bind_group_layout"),
-    //     });
+    let tint_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("tint_bind_group_layout"),
+        });
 
-    // let tint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-    //     layout: &tint_bind_group_layout,
-    //     entries: &[wgpu::BindGroupEntry {
-    //         binding: 0,
-    //         resource: tint_buffer.as_entire_binding(),
-    //     }],
-    //     label: Some("tint_bind_group"),
-    // });
+    let tint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &tint_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: tint_buffer.as_entire_binding(),
+        }],
+        label: Some("tint_bind_group"),
+    });
+
+    let avg_color_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Average color calc. Pipeline Layout"),
+            bind_group_layouts: &[
+                &sheet_bind_group_layout,
+                &size_bind_group_layout,
+                &target_bind_group_layout,
+                &tint_bind_group_layout,
+            ],
+            push_constant_ranges: &[],
+        });
+
+    let avg_color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Average color calc. Pipeline"),
+        layout: Some(&avg_color_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[Vertex::desc()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_find_avg_color",
+            targets: &[wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            }],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+            polygon_mode: wgpu::PolygonMode::Fill,
+            // Requires Features::DEPTH_CLIP_CONTROL
+            unclipped_depth: false,
+            // Requires Features::CONSERVATIVE_RASTERIZATION
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        // If the pipeline will be used with a multiview render pass, this
+        // indicates how many array layers the attachments will have.
+        multiview: None,
+    });
 
     let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Render Pipeline Layout"),
         bind_group_layouts: &[
             &sheet_bind_group_layout,
             &size_bind_group_layout,
-            //&tint_bind_group_layout,
+            &target_bind_group_layout,
+            &tint_bind_group_layout,
         ],
         push_constant_ranges: &[],
     });
@@ -465,6 +532,7 @@ async fn run() {
     let state = State {
         device,
         queue,
+        avg_color_pipeline,
         render_pipeline,
         compute_pipeline,
         size_bind_group,
@@ -475,8 +543,8 @@ async fn run() {
         packer: packer.get_frames().clone(),
         size_uniform,
         // tint_uniform,
-        // tint_bind_group,
-        // tint_buffer,
+        tint_bind_group,
+        tint_buffer,
         output_texture,
         output_texture_bind_group,
         diff_storage_buffer,
@@ -557,6 +625,7 @@ mod image_diff;
 pub struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    avg_color_pipeline: wgpu::RenderPipeline,
     render_pipeline: wgpu::RenderPipeline,
     compute_pipeline: wgpu::ComputePipeline,
     size_bind_group: wgpu::BindGroup,
@@ -567,8 +636,8 @@ pub struct State {
     packer: HashMap<u16, texture_packer::Frame<u16>>,
 
     // tint_uniform: TintUniform,
-    // tint_buffer: wgpu::Buffer,
-    // tint_bind_group: wgpu::BindGroup,
+    tint_buffer: wgpu::Buffer,
+    tint_bind_group: wgpu::BindGroup,
     size_uniform: SizeUniform,
 
     output_texture: texture::Texture,
@@ -587,12 +656,13 @@ use process::OPACITY;
 struct Vertex {
     position: [i32; 2],
     tex_coords: [f32; 2],
-    tint: [f32; 4],
+    tint_index: i32,
+    target_coords: [f32; 2],
 }
 
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Sint32x2, 1 => Float32x2, 2 => Float32x4];
+    const ATTRIBS: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Sint32x2, 1 => Float32x2, 2 => Sint32, 3 => Float32x2];
 
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         use std::mem;
@@ -616,12 +686,14 @@ struct SizeUniform {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-struct TintUniform {
-    tint: [[f32; 4]; TOTAL_SHAPES],
+struct TintBuffer {
+    tint: [[u32; 3]; TOTAL_SHAPES],
+    counts: [u32; TOTAL_SHAPES],
+    opacity: f32,
 }
 
-unsafe impl bytemuck::Zeroable for TintUniform {}
-unsafe impl bytemuck::Pod for TintUniform {}
+unsafe impl bytemuck::Zeroable for TintBuffer {}
+unsafe impl bytemuck::Pod for TintBuffer {}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

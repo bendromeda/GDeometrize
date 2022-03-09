@@ -2,9 +2,10 @@ use crate::Vertex;
 
 use crate::OPACITY;
 
-use crate::TintUniform;
+use crate::TintBuffer;
 
 use crate::process::OBJ_IDS;
+use crate::process::TOTAL_SHAPES;
 use crate::State;
 
 use image::DynamicImage;
@@ -97,7 +98,7 @@ impl Shape {
         let positions = positions.map(|p| {
             let x = p[0] + self.x as f32;
             let y = p[1] + self.y as f32;
-            [x as f32, y as f32]
+            [x, y]
         });
 
         (positions, tex_coords)
@@ -248,12 +249,24 @@ impl Shape {
         //     )
         // }
 
+        state.queue.write_buffer(
+            &state.tint_buffer,
+            0,
+            // here is the tint
+            bytemuck::cast_slice(&[TintBuffer {
+                tint: [[0, 0, 0]; TOTAL_SHAPES],
+                counts: [0; TOTAL_SHAPES],
+                opacity: OPACITY,
+            }]),
+        );
+
         let tints = shapes
             .par_iter()
-            .map(|(shape, view)| {
+            .enumerate()
+            .map(|(i, (shape, view))| {
                 let (positions, tex_coords) = shape.get_verts(state);
 
-                let c = shape.get_avg_color(state, positions, tex_coords, target, spritesheet);
+                //let c = shape.get_avg_color(state, positions, tex_coords, target, spritesheet);
                 //dbg!(c);
 
                 let verteces = positions
@@ -262,7 +275,11 @@ impl Shape {
                     .map(|(p, t)| Vertex {
                         position: [p[0] as i32, p[1] as i32],
                         tex_coords: [t[0], t[1]],
-                        tint: [c[0], c[1], c[2], OPACITY],
+                        tint_index: i as i32,
+                        target_coords: [
+                            p[0] / target.width() as f32,
+                            p[1] / target.height() as f32,
+                        ],
                     })
                     .collect::<Vec<_>>();
 
@@ -287,25 +304,50 @@ impl Shape {
             .collect::<Vec<_>>();
 
         for (view, vertex_buffer) in &tints {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: true,
-                    },
-                }],
-                depth_stencil_attachment: None,
-            });
-            render_pass.set_pipeline(&state.render_pipeline);
-            render_pass.set_bind_group(0, &state.sheet_bind_group, &[]);
-            render_pass.set_bind_group(1, &state.size_bind_group, &[]);
-            //render_pass.set_bind_group(2, &state.tint_bind_group, &[]);
+            {
+                let mut avg_color_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Avg color Pass"),
+                    color_attachments: &[wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: true,
+                        },
+                    }],
+                    depth_stencil_attachment: None,
+                });
+                avg_color_pass.set_pipeline(&state.avg_color_pipeline);
+                avg_color_pass.set_bind_group(0, &state.sheet_bind_group, &[]);
+                avg_color_pass.set_bind_group(1, &state.size_bind_group, &[]);
+                avg_color_pass.set_bind_group(2, &state.target_bind_group, &[]);
+                avg_color_pass.set_bind_group(3, &state.tint_bind_group, &[]);
 
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.draw(0..6, 0..1);
+                avg_color_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                avg_color_pass.draw(0..6, 0..1);
+            }
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Render Pass"),
+                    color_attachments: &[wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: true,
+                        },
+                    }],
+                    depth_stencil_attachment: None,
+                });
+                render_pass.set_pipeline(&state.render_pipeline);
+                render_pass.set_bind_group(0, &state.sheet_bind_group, &[]);
+                render_pass.set_bind_group(1, &state.size_bind_group, &[]);
+                render_pass.set_bind_group(2, &state.target_bind_group, &[]);
+                render_pass.set_bind_group(3, &state.tint_bind_group, &[]);
+
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         // state.queue.write_buffer(
@@ -320,7 +362,7 @@ impl Shape {
         let mut rng = rand::thread_rng();
         let x = rng.gen_range(0..width) as i32;
         let y = rng.gen_range(0..height) as i32;
-        let scale = rng.gen_range(0.2..4.0);
+        let scale = rng.gen_range(0.1..(std::cmp::max(width, height) as f32 / 40.0));
         let rot = rng.gen_range(0.0..(2.0 * std::f32::consts::PI));
 
         Shape {
