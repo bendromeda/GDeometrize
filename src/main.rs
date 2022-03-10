@@ -1,12 +1,11 @@
-use std::{collections::HashMap, io::BufWriter, path::Path};
+use std::collections::HashMap;
 
-use image::{imageops::FilterType, DynamicImage, RgbImage, RgbaImage};
+use image::imageops::FilterType;
 
 use process::TARGET;
-use texture_packer::{
-    exporter::ImageExporter, importer::ImageImporter, texture::Texture, TexturePackerConfig,
-};
-use wgpu::{util::DeviceExt, BindGroup};
+use texture_packer::exporter::ImageExporter;
+use texture_packer::texture::Texture;
+use wgpu::util::DeviceExt;
 
 use process::TOTAL_SHAPES;
 
@@ -24,7 +23,7 @@ pub(crate) fn lin(c: f32) -> f32 {
 
 async fn run() {
     env_logger::init();
-    let width = 256;
+    let width = 512;
     let img = image::open(TARGET).unwrap();
     let aspect_ratio = img.width() as f32 / img.height() as f32;
     let height: u32 = (width as f32 * aspect_ratio) as u32;
@@ -74,7 +73,7 @@ async fn run() {
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,
             force_fallback_adapter: false,
         })
@@ -83,10 +82,10 @@ async fn run() {
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
-                limits: wgpu::Limits {
-                    max_texture_array_layers: 2048,
-                    ..Default::default()
-                },
+                // limits: wgpu::Limits {
+                //     max_texture_array_layers: 2048,
+                //     ..Default::default()
+                // },
                 ..Default::default()
             },
             None,
@@ -175,7 +174,7 @@ async fn run() {
 
     let exporter = ImageExporter::export(&packer).unwrap();
 
-    let spritesheet = exporter.as_rgba8().unwrap().clone();
+    //let spritesheet = exporter.as_rgba8().unwrap().clone();
 
     let sheet_texture =
         texture::Texture::from_bytes(&device, &queue, exporter, "sheet.png").unwrap();
@@ -458,7 +457,7 @@ async fn run() {
 
     state.queue.submit(Some(encoder.finish()));
 
-    process::process(&state, &target, &spritesheet, avg_color);
+    process::process(&state, &target, avg_color);
 
     let mut encoder = state
         .device

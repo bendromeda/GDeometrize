@@ -13,8 +13,6 @@ use image::RgbaImage;
 use rand::Rng;
 use texture_packer::TexturePacker;
 
-use rayon::prelude::*;
-
 #[derive(Debug, Clone, Copy)]
 pub struct Shape {
     pub(crate) img_index: usize,
@@ -41,7 +39,6 @@ pub(crate) fn pack_textures<'a>() -> TexturePacker<'a, RgbaImage, u16> {
     packer
 }
 
-use image::GenericImageView;
 use wgpu::util::DeviceExt;
 
 impl Shape {
@@ -104,136 +101,6 @@ impl Shape {
         (positions, tex_coords)
     }
 
-    fn get_avg_color(
-        &self,
-        state: &State,
-        positions: [[f32; 2]; 4],
-        tex_coords: [[f32; 2]; 4],
-        target: &DynamicImage,
-        spritesheet: &RgbaImage,
-    ) -> [f32; 3] {
-        let frame = state.packer.get(&OBJ_IDS[self.img_index]).unwrap();
-        let obj_width = frame.frame.w;
-        let obj_height = frame.frame.h;
-
-        // let mut average = [0.0, 0.0, 0.0];
-        // let mut count = 0.0;
-        let scale = self.scale;
-
-        let x_samples = if scale < 1.0 {
-            (obj_width as f32 * scale) as u32
-        } else {
-            obj_width
-        };
-
-        let y_samples = if scale < 1.0 {
-            (obj_height as f32 * scale) as u32
-        } else {
-            obj_height
-        };
-
-        pub(crate) const CHUNK_SIZE: usize = 256;
-
-        let avg_color = (0..(x_samples * y_samples))
-            .into_par_iter()
-            .chunks(CHUNK_SIZE)
-            .map(|chunk| {
-                let mut sum = ([0.0, 0.0, 0.0], 0.0);
-                for i in chunk {
-                    let x = i % x_samples;
-                    let y = i / x_samples;
-
-                    let x01 = x as f32 / x_samples as f32;
-                    let y01 = y as f32 / y_samples as f32;
-
-                    let target_pos = [
-                        positions[0][0]
-                            + (positions[1][0] - positions[0][0]) * x01
-                            + (positions[3][0] - positions[0][0]) * y01,
-                        positions[0][1]
-                            + (positions[1][1] - positions[0][1]) * x01
-                            + (positions[3][1] - positions[0][1]) * y01,
-                    ];
-
-                    let texture_pos = [
-                        tex_coords[0][0]
-                            + (tex_coords[1][0] - tex_coords[0][0]) * x01
-                            + (tex_coords[3][0] - tex_coords[0][0]) * y01,
-                        tex_coords[0][1]
-                            + (tex_coords[1][1] - tex_coords[0][1]) * x01
-                            + (tex_coords[3][1] - tex_coords[0][1]) * y01,
-                    ];
-                    // continue if out of bounds
-                    if target_pos[0] < 0.0
-                        || (target_pos[0] as u32) >= target.width()
-                        || target_pos[1] < 0.0
-                        || (target_pos[1] as u32) >= target.height()
-                    {
-                        continue;
-                    }
-
-                    let target_pixel = target.get_pixel(target_pos[0] as u32, target_pos[1] as u32);
-                    let texture_pixel = *spritesheet.get_pixel(
-                        (texture_pos[0] * state.sheet_size[0] as f32) as u32,
-                        (texture_pos[1] * state.sheet_size[1] as f32) as u32,
-                    );
-
-                    //dbg!(target_pixel, texture_pixel);
-                    // understandable
-                    // this part just gets the average color of the target image in the area of the shape
-                    // its not on the gpu because idk how and also its not that much since tthe images are small
-                    // so i do it with cpu threads
-                    let alpha = texture_pixel.0[3] as f32 / 255.0;
-                    if alpha == 0.0 {
-                        continue;
-                    }
-
-                    sum.1 += alpha;
-                    // texture_pixel * x = target_pixel
-                    // x = target_pixel / texture_pixel
-                    if texture_pixel.0[0] > 0 {
-                        sum.0[0] += alpha
-                            * ((target_pixel.0[0] as f32 / 255.0)
-                                / (texture_pixel.0[0] as f32 / 255.0));
-                    }
-                    if texture_pixel.0[1] > 0 {
-                        sum.0[1] += alpha
-                            * ((target_pixel.0[1] as f32 / 255.0)
-                                / (texture_pixel.0[1] as f32 / 255.0));
-                    }
-                    if texture_pixel.0[2] > 0 {
-                        sum.0[2] += alpha
-                            * ((target_pixel.0[2] as f32 / 255.0)
-                                / (texture_pixel.0[2] as f32 / 255.0));
-                    }
-
-                    // sum.0[0] += alpha * (target_pixel.0[0] as f32 / 255.0);
-
-                    // sum.0[1] += alpha * (target_pixel.0[1] as f32 / 255.0);
-
-                    // sum.0[2] += alpha * (target_pixel.0[2] as f32 / 255.0);
-                }
-                //dbg!(sum);
-                sum
-            })
-            .reduce(
-                || ([0.0, 0.0, 0.0], 0.0),
-                |(sum, sc), (next, c)| {
-                    (
-                        [sum[0] + next[0], sum[1] + next[1], sum[2] + next[2]],
-                        sc + c,
-                    )
-                },
-            );
-
-        //dbg!(avg_color);
-
-        if avg_color.1 > 0.0 {
-            avg_color.0.map(|a| a / avg_color.1)
-        } else {
-            [0.0, 0.0, 0.0]
-        }
-    }
     pub(crate) fn test_diff(
         shapes: &[Shape],
         state: &State,
@@ -398,7 +265,7 @@ impl Shape {
         self.rot += rand::thread_rng().gen_range(-0.1..0.1);
     }
 
-    pub(crate) fn to_obj_string(&self, r: f32, g: f32, b: f32, layer: usize) -> String {
+    pub(crate) fn to_obj_string(self, r: f32, g: f32, b: f32, layer: usize) -> String {
         let (h, s, v) = rgb_to_hsv(r, g, b);
         let hsv_string = format!("{}a{}a{}a0a0", h, s, v);
         let scale = 1.0;
@@ -413,11 +280,11 @@ impl Shape {
     }
 }
 
-pub(crate) fn rotate_point(x: f32, y: f32, angle: f32) -> (f32, f32) {
-    let cos = angle.cos();
-    let sin = angle.sin();
-    (x * cos - y * sin, x * sin + y * cos)
-}
+// pub(crate) fn rotate_point(x: f32, y: f32, angle: f32) -> (f32, f32) {
+//     let cos = angle.cos();
+//     let sin = angle.sin();
+//     (x * cos - y * sin, x * sin + y * cos)
+// }
 
 pub(crate) fn max_float(a: f32, b: f32) -> f32 {
     if a > b {
@@ -452,24 +319,22 @@ pub(crate) fn to_srgb(v: f32) -> f32 {
 pub(crate) fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (i32, f32, f32) {
     let max = max_float(r, max_float(g, b));
     let min = min_float(r, min_float(g, b));
-    let (mut h, mut s, v) = (max, max, max);
+    let v = max;
 
     let d = max - min;
-    s = if max == 0.0 { 0.0 } else { d / max };
+    let s = if max == 0.0 { 0.0 } else { d / max };
 
-    if max == min {
-        h = 0.0; // achromatic
+    let h = if max == min {
+        0.0 // achromatic
     } else {
-        h = if max == r {
+        (if max == r {
             (g - b) / d + (if g < b { 6.0 } else { 0.0 })
         } else if max == g {
             (b - r) / d + 2.0
         } else {
             (r - g) / d + 4.0
-        };
-
-        h /= 6.0;
-    }
+        }) / 6.0
+    };
     if h.is_nan() || s.is_nan() || v.is_nan() {
         panic!("NaN did done with R: {}, G: {}, B: {}", r, g, b)
     }

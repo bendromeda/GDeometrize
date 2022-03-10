@@ -16,7 +16,7 @@ struct VertexOutput {
     [[location(2)]] target_coords: vec2<f32>;
 };
 
-let total_shapes = 800;
+let total_shapes = 512;
 
 let factor = 1000.0;
 struct Tint {
@@ -69,24 +69,37 @@ var s_diffuse: sampler;
 fn fs_find_avg_color(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let tex = textureSample(t_diffuse, s_diffuse, in.tex_coords);
     let target = textureSample(t_target, s_target, in.target_coords);
-
+    let fac = f32(in.target_coords.x > -1.0
+        && in.target_coords.x < 1.0 
+        && in.target_coords.y > -1.0 
+        && in.target_coords.y < 1.0);
+       
     let a = tex.a;
-    atomicAdd(&tint.counts[in.tint_index], u32(a * factor));
-    atomicAdd(&tint.tint[in.tint_index][0], u32(a * (target.r / tex.r) * factor));
-    atomicAdd(&tint.tint[in.tint_index][1], u32(a * (target.g / tex.g) * factor));
-    atomicAdd(&tint.tint[in.tint_index][2], u32(a * (target.b / tex.b) * factor));
+    atomicAdd(&tint.counts[in.tint_index], u32(a * factor * fac));
+    let f = f32(tex.r > 0.0);
+    atomicAdd(&tint.tint[in.tint_index][0], u32(f * a * (target.r / tex.r) * factor * fac));
+    
+    let f = f32(tex.g > 0.0);
+    atomicAdd(&tint.tint[in.tint_index][1], u32(f * a * (target.g / tex.g) * factor * fac));
+    
+    let f = f32(tex.b > 0.0);
+    atomicAdd(&tint.tint[in.tint_index][2], u32(f * a * (target.b / tex.b) * factor * fac));
+    
+    
     return vec4<f32>(0.0);
 }
 
 fn color_diff(p1: vec3<f32>, p2: vec3<f32>) -> f32 {
-    let sub: vec3<f32> = p1 - p2;
-    return sqrt(sub.r * sub.r + sub.g * sub.g + sub.b * sub.b);
+    let d: vec3<f32> = p1 - p2;
+    let rdash = (p1.r + p2.r) / 2.0;
+    return sqrt((2.0 + rdash) * d.r * d.r + 4.0 * d.g * d.g + (3.0 - rdash) * d.b * d.b);
 }
 
 [[stage(fragment)]]
 fn fs_find_diff(in: VertexOutput) -> [[location(0)]] vec4<f32> {
+
     let c = f32(tint.counts[in.tint_index]) / factor;
-    
+        
     var t = vec4<f32>(
         (f32(tint.tint[in.tint_index][0]) / factor) / c,
         (f32(tint.tint[in.tint_index][1]) / factor) / c,
@@ -102,8 +115,15 @@ fn fs_find_diff(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let next = t.rgb + current * (1.0 - t.a);
 
     let diff = color_diff(target, next) - color_diff(target, current);
+        
+    let fac = f32(c > 0.0 
+        && in.target_coords.x > -1.0
+        && in.target_coords.x < 1.0 
+        && in.target_coords.y > -1.0 
+        && in.target_coords.y < 1.0);
+        
+    atomicAdd(&tint.diff[in.tint_index], i32(255.0 * diff * fac));
     
-    atomicAdd(&tint.diff[in.tint_index], i32(64.0 * diff));
 
     return vec4<f32>(0.0);
 }

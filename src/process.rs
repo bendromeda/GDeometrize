@@ -1,18 +1,17 @@
-use image::{DynamicImage, RgbaImage};
+use image::DynamicImage;
 use std::fs;
-use wgpu::Origin3d;
 
 use crate::{shape::*, State, TintBuffer};
 
-pub const OPACITY: f32 = 0.7;
+pub const OPACITY: f32 = 0.8;
 
-const ITERATIONS: usize = 20;
+const ITERATIONS: usize = 5000;
 // const SHAPES_ADJUSTED: usize = 10;
 // const ADJUSTMENTS: usize = 100;
 
-pub const TOTAL_SHAPES: usize = 800;
+pub const TOTAL_SHAPES: usize = 512;
 
-const CUTOFF: usize = 10;
+const CUTOFF: usize = 8;
 
 pub const OBJ_IDS: &[u16] = &[
     18, 19, 20, 211, 48, 49, 113, 114, 115, 129, 130, 211, 229, 230, 233, 242, 251, 259, 266, 273,
@@ -23,10 +22,10 @@ pub const OBJ_IDS: &[u16] = &[
     1861, 1869, 1870, 1871, 1875, 1876, 1877, 1888,
 ];
 
-pub const TARGET: &str = "planet.jpeg";
+pub const TARGET: &str = "galaxy.jpg";
 
-pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage, bg_color: [f32; 3]) {
-    let mut level_string = format!(";1,899,2,-29,3,975,36,1,7,255,8,0,9,0,10,0,35,{OPACITY},23,1;1,899,2,-29,3,1005,36,1,7,{},8,{},9,{},10,0,35,1,23,1000;", bg_color[0] * 255.0, bg_color[1] * 255.0, bg_color[2] * 255.0);
+pub fn process(state: &State, target: &DynamicImage, bg_color: [f32; 3]) {
+    let mut level_string = format!(";1,899,2,-29,3,975,36,1,7,255,8,0,9,0,10,0,35,{OPACITY},23,1;1,899,2,-29,3,1005,36,1,7,{},8,{},9,{},10,0,35,1,23,1000;", to_srgb(bg_color[0]) * 255.0, to_srgb(bg_color[1]) * 255.0, to_srgb(bg_color[2]) * 255.0);
 
     //let mut current_diff = std::i32::MAX;
     for iteration in 0..ITERATIONS {
@@ -43,18 +42,22 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage, bg
             .enumerate()
             .collect::<Vec<_>>();
 
-        for _ in 0..30 {
+        for _ in 0..6 {
             diff.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
             let mut new_shapes = vec![shapes[diff[0].0]];
             for (i, _) in diff[..CUTOFF].iter() {
-                for _ in 0..(TOTAL_SHAPES / CUTOFF) {
+                for _ in 0..(TOTAL_SHAPES / CUTOFF - 2) {
                     let mut shape = shapes[*i];
                     shape.adjust_random();
                     new_shapes.push(shape);
                 }
             }
-            new_shapes.pop();
-            assert_eq!(new_shapes.len(), TOTAL_SHAPES);
+            while new_shapes.len() < TOTAL_SHAPES {
+                let mut shape = shapes[0];
+                shape.adjust_random();
+                new_shapes.push(shape);
+            }
+            //assert_eq!(new_shapes.len(), TOTAL_SHAPES);
             shapes = new_shapes;
             diff = test_diff(state, &shapes, target)
                 .into_iter()
@@ -70,6 +73,14 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage, bg
 
         shapes[diff[0].0].paste(state, target, diff[0].0);
         let tint = pollster::block_on(get_tint(state, diff[0].0));
+
+        // dbg!(shapes[diff[0].0]);
+        // dbg!(tint.map(|x| (x * 255.0) as u8));
+
+        // if iteration > 200 && diff[0].1 < -1000 {
+        //     break;
+        // }
+
         level_string += &shapes[diff[0].0].to_obj_string(
             to_srgb(tint[0]),
             to_srgb(tint[1]),
@@ -77,6 +88,20 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage, bg
             iteration,
         );
     }
+
+    // let shape = Shape {
+    //     img_index: 64,
+    //     x: 59,
+    //     y: 39,
+    //     scale: 0.6976323,
+    //     rot: 0.9563002,
+    // };
+    // dbg!(OBJ_IDS[64]);
+
+    // let diff = test_diff(state, &[shape], target);
+    // println!("improvement: {}", -diff[0]);
+
+    // shape.paste(state, target, 0);
 
     // pollster::block_on(async {
     //     let buffer_slice = state.tint_buffer.slice(..);
