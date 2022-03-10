@@ -234,11 +234,10 @@ impl Shape {
             [0.0, 0.0, 0.0]
         }
     }
-    pub(crate) fn paste(
-        shapes: &[(Shape, wgpu::TextureView)],
+    pub(crate) fn test_diff(
+        shapes: &[Shape],
         state: &State,
         target: &DynamicImage,
-        spritesheet: &RgbaImage,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // println!("{:?}", avg_color);
@@ -257,108 +256,126 @@ impl Shape {
                 tint: [[0, 0, 0]; TOTAL_SHAPES],
                 counts: [0; TOTAL_SHAPES],
                 opacity: OPACITY,
+                diff: [0; TOTAL_SHAPES],
             }]),
         );
+        let mut verteces = Vec::<Vertex>::new();
 
-        let tints = shapes
-            .par_iter()
-            .enumerate()
-            .map(|(i, (shape, view))| {
-                let (positions, tex_coords) = shape.get_verts(state);
+        for (i, shape) in shapes.iter().enumerate() {
+            let (positions, tex_coords) = shape.get_verts(state);
 
-                //let c = shape.get_avg_color(state, positions, tex_coords, target, spritesheet);
-                //dbg!(c);
+            //let c = shape.get_avg_color(state, positions, tex_coords, target, spritesheet);
+            //dbg!(c);
 
-                let verteces = positions
-                    .iter()
-                    .zip(tex_coords.iter())
-                    .map(|(p, t)| Vertex {
-                        position: [p[0] as i32, p[1] as i32],
-                        tex_coords: [t[0], t[1]],
-                        tint_index: i as i32,
-                        target_coords: [
-                            p[0] / target.width() as f32,
-                            p[1] / target.height() as f32,
-                        ],
-                    })
-                    .collect::<Vec<_>>();
+            let v = positions
+                .iter()
+                .zip(tex_coords.iter())
+                .map(|(p, t)| Vertex {
+                    position: [p[0] as i32, p[1] as i32],
+                    tex_coords: [t[0], t[1]],
+                    tint_index: i as i32,
+                    target_coords: [p[0] / target.width() as f32, p[1] / target.height() as f32],
+                })
+                .collect::<Vec<_>>();
 
-                let vertex_buffer =
-                    state
-                        .device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Vertex Buffer"),
-                            contents: bytemuck::cast_slice(&[
-                                verteces[3],
-                                verteces[0],
-                                verteces[1],
-                                verteces[3],
-                                verteces[1],
-                                verteces[2],
-                            ]),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+            verteces.extend([v[3], v[0], v[1], v[3], v[1], v[2]]);
+        }
 
-                (view, vertex_buffer)
+        let vertex_buffer = state
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(&verteces),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        let mut render_pass = |label, pipeline| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &state.dummy_texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    },
+                }],
+                depth_stencil_attachment: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &state.sheet_bind_group, &[]);
+            pass.set_bind_group(1, &state.target_bind_group, &[]);
+            pass.set_bind_group(2, &state.tint_bind_group, &[]);
+            pass.set_bind_group(3, &state.output_texture_bind_group, &[]);
+
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.draw(0..verteces.len() as u32, 0..1);
+        };
+
+        render_pass("avg color pass", &state.avg_color_pipeline);
+        render_pass("diff pass", &state.diff_pipeline);
+    }
+
+    pub(crate) fn paste(
+        &self,
+        state: &State,
+        target: &DynamicImage,
+        //encoder: &mut wgpu::CommandEncoder,
+        tint_index: usize,
+    ) {
+        let mut encoder = state
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+        let (positions, tex_coords) = self.get_verts(state);
+
+        let v = positions
+            .iter()
+            .zip(tex_coords.iter())
+            .map(|(p, t)| Vertex {
+                position: [p[0] as i32, p[1] as i32],
+                tex_coords: [t[0], t[1]],
+                tint_index: tint_index as i32,
+                target_coords: [p[0] / target.width() as f32, p[1] / target.height() as f32],
             })
             .collect::<Vec<_>>();
 
-        for (view, vertex_buffer) in &tints {
-            {
-                let mut avg_color_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Avg color Pass"),
-                    color_attachments: &[wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: true,
-                        },
-                    }],
-                    depth_stencil_attachment: None,
-                });
-                avg_color_pass.set_pipeline(&state.avg_color_pipeline);
-                avg_color_pass.set_bind_group(0, &state.sheet_bind_group, &[]);
-                avg_color_pass.set_bind_group(1, &state.size_bind_group, &[]);
-                avg_color_pass.set_bind_group(2, &state.target_bind_group, &[]);
-                avg_color_pass.set_bind_group(3, &state.tint_bind_group, &[]);
+        let vertex_buffer = state
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(&[v[3], v[0], v[1], v[3], v[1], v[2]]),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-                avg_color_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                avg_color_pass.draw(0..6, 0..1);
-            }
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Render Pass"),
-                    color_attachments: &[wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: true,
-                        },
-                    }],
-                    depth_stencil_attachment: None,
-                });
-                render_pass.set_pipeline(&state.render_pipeline);
-                render_pass.set_bind_group(0, &state.sheet_bind_group, &[]);
-                render_pass.set_bind_group(1, &state.size_bind_group, &[]);
-                render_pass.set_bind_group(2, &state.target_bind_group, &[]);
-                render_pass.set_bind_group(3, &state.tint_bind_group, &[]);
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &state.output_texture.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    },
+                }],
+                depth_stencil_attachment: None,
+            });
+            pass.set_pipeline(&state.render_pipeline);
+            pass.set_bind_group(0, &state.sheet_bind_group, &[]);
+            pass.set_bind_group(1, &state.target_bind_group, &[]);
+            pass.set_bind_group(2, &state.tint_bind_group, &[]);
+            //pass.set_bind_group(3, &state.output_texture_bind_group, &[]);
 
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.draw(0..6, 0..1);
-            }
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.draw(0..6, 0..1);
         }
 
-        // state.queue.write_buffer(
-        //     &state.tint_buffer,
-        //     0,
-        //     // here is the tint
-        //     bytemuck::cast_slice(&tints.into_iter().map(|(t, _, _)| t).collect::<Vec<_>>()),
-        // );
+        state.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    pub(crate) fn new_random(width: u32, height: u32, img_index: usize) -> Shape {
+    pub(crate) fn new_random(width: u32, height: u32) -> Shape {
         let mut rng = rand::thread_rng();
         let x = rng.gen_range(0..width) as i32;
         let y = rng.gen_range(0..height) as i32;
@@ -366,7 +383,7 @@ impl Shape {
         let rot = rng.gen_range(0.0..(2.0 * std::f32::consts::PI));
 
         Shape {
-            img_index,
+            img_index: rng.gen_range(0..OBJ_IDS.len()) as usize,
             x,
             y,
             scale,
@@ -375,25 +392,23 @@ impl Shape {
     }
 
     pub(crate) fn adjust_random(&mut self) {
-        self.x = self.x as i32 + rand::thread_rng().gen_range(-3i32..=3);
-        self.y = self.y as i32 + rand::thread_rng().gen_range(-3i32..=3);
+        self.x += rand::thread_rng().gen_range(-3i32..=3);
+        self.y += rand::thread_rng().gen_range(-3i32..=3);
         self.scale *= rand::thread_rng().gen_range(0.9..1.1);
         self.rot += rand::thread_rng().gen_range(-0.1..0.1);
     }
 
-    pub(crate) fn to_obj_string(&self, r: f32, g: f32, b: f32) -> String {
+    pub(crate) fn to_obj_string(&self, r: f32, g: f32, b: f32, layer: usize) -> String {
         let (h, s, v) = rgb_to_hsv(r, g, b);
         let hsv_string = format!("{}a{}a{}a0a0", h, s, v);
         let scale = 1.0;
         format!(
-            "1,{},2,{},3,{},6,{},35,{},32,{},41,1,43,{},21,1;",
+            "1,{},2,{},3,{},6,{},32,{},41,1,43,{hsv_string},21,1,22,2,25,{layer},24,-1;",
             OBJ_IDS[self.img_index],
             (self.x as f32) * 0.5 * scale,
             -(self.y as f32) * 0.5 * scale,
-            -self.rot * 180.0 / std::f32::consts::PI,
-            OPACITY,
+            self.rot * 180.0 / std::f32::consts::PI,
             self.scale * scale,
-            hsv_string,
         )
     }
 }

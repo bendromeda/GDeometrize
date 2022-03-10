@@ -30,6 +30,20 @@ async fn run() {
     let height: u32 = (width as f32 * aspect_ratio) as u32;
 
     let mut target = img.resize(width, height, FilterType::Triangle);
+    // get average color of target image
+    let mut r = 0.0;
+    let mut g = 0.0;
+    let mut b = 0.0;
+    use image::GenericImageView;
+    for pixel in target.pixels() {
+        r += lin(pixel.2[0] as f32 / 255.0);
+        g += lin(pixel.2[1] as f32 / 255.0);
+        b += lin(pixel.2[2] as f32 / 255.0);
+    }
+    r /= target.width() as f32 * target.height() as f32;
+    g /= target.width() as f32 * target.height() as f32;
+    b /= target.width() as f32 * target.height() as f32;
+    let avg_color = [r, g, b];
 
     // convert this image from srgb to linear
 
@@ -100,53 +114,8 @@ async fn run() {
     let output_texture = device.create_texture(&texture_desc);
     let output_texture_view = output_texture.create_view(&Default::default());
 
-    let temp_texture = device.create_texture(&wgpu::TextureDescriptor {
-        size: wgpu::Extent3d {
-            width: target.width(),
-            height: target.height(),
-            depth_or_array_layers: TOTAL_SHAPES as u32,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING,
-        label: None,
-    });
-
-    let temp_texture_view = temp_texture.create_view(&wgpu::TextureViewDescriptor {
-        // dimension: Some(wgpu::TextureViewDimension::D2Array),
-        // base_array_layer: 0,
-        ..Default::default()
-    });
-    let temp_texture =
-        texture::Texture::from_texture(&device, temp_texture, temp_texture_view).unwrap();
-
-    let temp_texture_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("temp_texture_bind_group_layout"),
-        });
+    let dummy_texture = device.create_texture(&texture_desc);
+    let dummy_texture_view = dummy_texture.create_view(&Default::default());
 
     let output_texture =
         texture::Texture::from_texture(&device, output_texture, output_texture_view).unwrap();
@@ -156,7 +125,7 @@ async fn run() {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -166,7 +135,7 @@ async fn run() {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -257,7 +226,7 @@ async fn run() {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -267,7 +236,7 @@ async fn run() {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -296,49 +265,15 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
 
-    let size_uniform = SizeUniform {
-        width: target.width(),
-        height: target.height(),
-    };
-
-    let size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Size buffer"),
-        contents: bytemuck::cast_slice(&[size_uniform]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let size_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-            label: Some("size_bind_group_layout"),
-        });
-
-    let size_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &size_bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: size_buffer.as_entire_binding(),
-        }],
-        label: Some("size_bind_group"),
-    });
-
     let tint_uniform = TintBuffer {
         tint: [[0, 0, 0]; TOTAL_SHAPES],
         counts: [0; TOTAL_SHAPES],
         opacity: OPACITY,
+        diff: [0; TOTAL_SHAPES],
     };
 
     let tint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Size buffer"),
+        label: Some("Tint buffer"),
         contents: bytemuck::cast_slice(&[tint_uniform]),
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
@@ -369,26 +304,54 @@ async fn run() {
         label: Some("tint_bind_group"),
     });
 
-    let avg_color_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Average color calc. Pipeline Layout"),
-            bind_group_layouts: &[
-                &sheet_bind_group_layout,
-                &size_bind_group_layout,
-                &target_bind_group_layout,
-                &tint_bind_group_layout,
-            ],
-            push_constant_ranges: &[],
-        });
+    let render_layout = &wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[
+            &sheet_bind_group_layout,
+            &target_bind_group_layout,
+            &tint_bind_group_layout,
+            &output_texture_bind_group_layout,
+        ],
+        push_constant_ranges: &[],
+    };
 
-    let avg_color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Average color calc. Pipeline"),
-        layout: Some(&avg_color_pipeline_layout),
+    let pipeline_def = wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: "vs_main",
             buffers: &[Vertex::desc()],
         },
+        fragment: None,
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+            polygon_mode: wgpu::PolygonMode::Fill,
+            // Requires Features::DEPTH_CLIP_CONTROL
+            unclipped_depth: false,
+            // Requires Features::CONSERVATIVE_RASTERIZATION
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        // If the pipeline will be used with a multiview render pass, this
+        // indicates how many array layers the attachments will have.
+        multiview: None,
+    };
+
+    let avg_color_pipeline_layout = device.create_pipeline_layout(render_layout);
+
+    let avg_color_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Average color calc. Pipeline"),
+        layout: Some(&avg_color_pipeline_layout),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: "fs_find_avg_color",
@@ -398,48 +361,42 @@ async fn run() {
                 write_mask: wgpu::ColorWrites::ALL,
             }],
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-            polygon_mode: wgpu::PolygonMode::Fill,
-            // Requires Features::DEPTH_CLIP_CONTROL
-            unclipped_depth: false,
-            // Requires Features::CONSERVATIVE_RASTERIZATION
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        // If the pipeline will be used with a multiview render pass, this
-        // indicates how many array layers the attachments will have.
-        multiview: None,
+        ..pipeline_def.clone()
     });
 
-    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Render Pipeline Layout"),
-        bind_group_layouts: &[
-            &sheet_bind_group_layout,
-            &size_bind_group_layout,
-            &target_bind_group_layout,
-            &tint_bind_group_layout,
-        ],
-        push_constant_ranges: &[],
+    let diff_pipeline_layout = device.create_pipeline_layout(render_layout);
+
+    let diff_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Diff calc. Pipeline"),
+        layout: Some(&diff_pipeline_layout),
+
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_find_diff",
+            targets: &[wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            }],
+        }),
+        ..pipeline_def.clone()
     });
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[Vertex::desc()],
-        },
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[
+                    &sheet_bind_group_layout,
+                    &target_bind_group_layout,
+                    &tint_bind_group_layout,
+                    //&output_texture_bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            }),
+        ),
+
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: "fs_main",
@@ -449,84 +406,7 @@ async fn run() {
                 write_mask: wgpu::ColorWrites::ALL,
             }],
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-            polygon_mode: wgpu::PolygonMode::Fill,
-            // Requires Features::DEPTH_CLIP_CONTROL
-            unclipped_depth: false,
-            // Requires Features::CONSERVATIVE_RASTERIZATION
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        // If the pipeline will be used with a multiview render pass, this
-        // indicates how many array layers the attachments will have.
-        multiview: None,
-    });
-    // cls on windows btw
-    // yes rn at least
-    // because its doing two slopes
-    // like |/| two triangles yes look in output.png if its updated
-    // oh is it pasting slope objects understandable
-
-    let diff_storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Diff Storage Buffer"),
-        contents: bytemuck::cast_slice(&[DiffBuffer {
-            diff: [0; TOTAL_SHAPES],
-        }]),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::MAP_READ,
-    });
-
-    let diff_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-            label: Some("diff_bind_group_layout"),
-        });
-
-    let diff_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &diff_bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: diff_storage_buffer.as_entire_binding(),
-        }],
-        label: Some("diff_bind_group"),
-    });
-
-    let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Render Pipeline Layout"),
-        bind_group_layouts: &[
-            &target_bind_group_layout,
-            &temp_texture_bind_group_layout,
-            &size_bind_group_layout,
-            &diff_bind_group_layout,
-        ],
-        push_constant_ranges: &[],
-    });
-
-    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Compute Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &shader,
-        entry_point: "cmp_main",
+        ..pipeline_def.clone()
     });
 
     let state = State {
@@ -534,23 +414,21 @@ async fn run() {
         queue,
         avg_color_pipeline,
         render_pipeline,
-        compute_pipeline,
-        size_bind_group,
+        diff_pipeline,
         sheet_bind_group,
         target_bind_group,
 
         sheet_size: [packer.width(), packer.height()],
         packer: packer.get_frames().clone(),
-        size_uniform,
+
         // tint_uniform,
         tint_bind_group,
         tint_buffer,
         output_texture,
         output_texture_bind_group,
-        diff_storage_buffer,
-        diff_bind_group,
-        temp_texture,
-        temp_texture_bind_group_layout,
+        // temp_texture,
+        // temp_texture_bind_group_layout,
+        dummy_texture_view,
     };
 
     let mut encoder = state
@@ -565,9 +443,9 @@ async fn run() {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
+                        r: avg_color[0] as f64,
+                        g: avg_color[1] as f64,
+                        b: avg_color[2] as f64,
                         a: 1.0,
                     }),
 
@@ -580,7 +458,7 @@ async fn run() {
 
     state.queue.submit(Some(encoder.finish()));
 
-    process::process(&state, &target, &spritesheet);
+    process::process(&state, &target, &spritesheet, avg_color);
 
     let mut encoder = state
         .device
@@ -620,15 +498,15 @@ async fn run() {
     output_buffer.unmap();
 }
 
-mod image_diff;
+// mod image_diff;
 
 pub struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     avg_color_pipeline: wgpu::RenderPipeline,
+    diff_pipeline: wgpu::RenderPipeline,
     render_pipeline: wgpu::RenderPipeline,
-    compute_pipeline: wgpu::ComputePipeline,
-    size_bind_group: wgpu::BindGroup,
+    //compute_pipeline: wgpu::ComputePipeline,
     sheet_bind_group: wgpu::BindGroup,
     target_bind_group: wgpu::BindGroup,
     //view: wgpu::TextureView,
@@ -638,15 +516,14 @@ pub struct State {
     // tint_uniform: TintUniform,
     tint_buffer: wgpu::Buffer,
     tint_bind_group: wgpu::BindGroup,
-    size_uniform: SizeUniform,
 
     output_texture: texture::Texture,
     output_texture_bind_group: wgpu::BindGroup,
-    diff_storage_buffer: wgpu::Buffer,
-    diff_bind_group: wgpu::BindGroup,
-
-    temp_texture: texture::Texture,
-    temp_texture_bind_group_layout: wgpu::BindGroupLayout,
+    dummy_texture_view: wgpu::TextureView,
+    // diff_storage_buffer: wgpu::Buffer,
+    // diff_bind_group: wgpu::BindGroup,
+    // temp_texture: texture::Texture,
+    // temp_texture_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 mod process;
@@ -675,14 +552,14 @@ impl Vertex {
     }
 }
 
-// We need this for Rust to store our data correctly for the shaders
-#[repr(C)]
-// This is so we can store this in a buffer
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SizeUniform {
-    width: u32,
-    height: u32,
-}
+// // We need this for Rust to store our data correctly for the shaders
+// #[repr(C)]
+// // This is so we can store this in a buffer
+// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+// struct SizeUniform {
+//     width: u32,
+//     height: u32,
+// }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -690,6 +567,7 @@ struct TintBuffer {
     tint: [[u32; 3]; TOTAL_SHAPES],
     counts: [u32; TOTAL_SHAPES],
     opacity: f32,
+    diff: [i32; TOTAL_SHAPES],
 }
 
 unsafe impl bytemuck::Zeroable for TintBuffer {}

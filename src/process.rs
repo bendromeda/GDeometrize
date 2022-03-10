@@ -2,81 +2,80 @@ use image::{DynamicImage, RgbaImage};
 use std::fs;
 use wgpu::Origin3d;
 
-use crate::{image_diff, shape::*, State};
+use crate::{shape::*, State, TintBuffer};
 
-pub const OPACITY: f32 = 1.0;
+pub const OPACITY: f32 = 0.7;
 
-const SHAPES_PER_OBJ: usize = 4;
-const ITERATIONS: usize = 1000;
+const ITERATIONS: usize = 20;
 // const SHAPES_ADJUSTED: usize = 10;
 // const ADJUSTMENTS: usize = 100;
 
-pub const TOTAL_SHAPES: usize = SHAPES_PER_OBJ * OBJ_IDS.len();
+pub const TOTAL_SHAPES: usize = 800;
+
+const CUTOFF: usize = 10;
 
 pub const OBJ_IDS: &[u16] = &[
-    211, 259, 266, 273, 280, 693, 695, 697, 699, 701, 725, 1011, 1012, 1013, 1102, 1106, 1111,
-    1112, 1113, 1114, 1115, 1116, 1117, 1118, 1348, 1351, 1352, 1353, 1354, 1355, 1442, 1443, 1461,
-    1462, 1463, 1464, 1596, 1597, 1608, 1609, 1610, 1753, 1754, 1757, 1764, 1765, 1766, 1767, 1768,
-    1769, 1837, 1835, 1869, 1870, 1871, 1874, 1875, 1886, 1887, 1888,
+    18, 19, 20, 211, 48, 49, 113, 114, 115, 129, 130, 211, 229, 230, 233, 242, 251, 259, 266, 273,
+    279, 280, 281, 282, 419, 420, 503, 504, 505, 693, 695, 697, 699, 701, 907, 939, 1011, 1012,
+    1013, 1117, 1118, 1192, 1193, 1196, 1291, 1293, 1348, 1349, 1350, 1351, 1352, 1353, 1354, 1355,
+    1387, 1388, 1389, 1390, 1461, 1462, 1463, 1464, 1510, 1511, 1512, 1597, 1738, 1753, 1754, 1757,
+    1764, 1765, 1766, 1767, 1768, 1769, 1770, 1771, 1772, 1777, 1778, 1779, 1780, 1835, 1836, 1837,
+    1861, 1869, 1870, 1871, 1875, 1876, 1877, 1888,
 ];
 
 pub const TARGET: &str = "planet.jpeg";
 
-pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage) {
-    let mut level_string = "1,899,2,-29,3,975,36,1,7,255,8,0,9,0,10,0,35,1,23,1;1,899,2,-29,3,1005,36,1,7,0,8,0,9,0,10,0,35,1,23,1000;".to_string();
+pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage, bg_color: [f32; 3]) {
+    let mut level_string = format!(";1,899,2,-29,3,975,36,1,7,255,8,0,9,0,10,0,35,{OPACITY},23,1;1,899,2,-29,3,1005,36,1,7,{},8,{},9,{},10,0,35,1,23,1000;", bg_color[0] * 255.0, bg_color[1] * 255.0, bg_color[2] * 255.0);
 
-    let mut current_diff = std::u32::MAX;
-    for _ in 0..ITERATIONS {
+    //let mut current_diff = std::i32::MAX;
+    for iteration in 0..ITERATIONS {
         let mut shapes = Vec::new();
 
-        for img_index in 0..OBJ_IDS.len() {
-            for _ in 0..SHAPES_PER_OBJ {
-                let shape = Shape::new_random(target.width(), target.height(), img_index);
-                shapes.push(shape);
-            }
+        for _ in 0..TOTAL_SHAPES {
+            let shape = Shape::new_random(target.width(), target.height());
+            shapes.push(shape);
         }
 
         //dbg!(&shapes);
-        let diff = test_diff(state, &shapes, target, spritesheet);
+        let mut diff = test_diff(state, &shapes, target)
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<_>>();
 
-        // get index of min diff
-        let mut min_diff_index = 0;
-        for i in 0..shapes.len() {
-            if diff[i] < diff[min_diff_index] {
-                min_diff_index = i;
+        for _ in 0..30 {
+            diff.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let mut new_shapes = vec![shapes[diff[0].0]];
+            for (i, _) in diff[..CUTOFF].iter() {
+                for _ in 0..(TOTAL_SHAPES / CUTOFF) {
+                    let mut shape = shapes[*i];
+                    shape.adjust_random();
+                    new_shapes.push(shape);
+                }
             }
+            new_shapes.pop();
+            assert_eq!(new_shapes.len(), TOTAL_SHAPES);
+            shapes = new_shapes;
+            diff = test_diff(state, &shapes, target)
+                .into_iter()
+                .enumerate()
+                .collect::<Vec<_>>();
         }
-        if diff[min_diff_index] < current_diff {
-            current_diff = diff[min_diff_index];
-        } else {
+
+        if diff[0].1 >= 0 {
             continue;
         }
-        dbg!(diff[min_diff_index]);
-        let mut encoder = state
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
-        encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTextureBase {
-                texture: &state.temp_texture.texture,
-                mip_level: 0,
-                origin: Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: min_diff_index as u32,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            state.output_texture.texture.as_image_copy(),
-            wgpu::Extent3d {
-                width: state.size_uniform.width as u32,
-                height: state.size_uniform.height as u32,
-                depth_or_array_layers: 1,
-            },
-        );
 
-        state.queue.submit(std::iter::once(encoder.finish()));
+        println!("improvement: {}", -diff[0].1);
+
+        shapes[diff[0].0].paste(state, target, diff[0].0);
+        let tint = pollster::block_on(get_tint(state, diff[0].0));
+        level_string += &shapes[diff[0].0].to_obj_string(
+            to_srgb(tint[0]),
+            to_srgb(tint[1]),
+            to_srgb(tint[2]),
+            iteration,
+        );
     }
 
     // pollster::block_on(async {
@@ -185,90 +184,43 @@ pub fn process(state: &State, target: &DynamicImage, spritesheet: &RgbaImage) {
 
     // dbg!(test_diff(state, shape2, target, spritesheet));
 
-    fs::write("./uhhh.txt", level_string).expect("Unable to write file");
+    fs::write("./levelstring.txt", level_string).expect("Unable to write file");
 }
 
-pub fn test_diff(
-    state: &State,
-    shapes: &[Shape],
-    target: &DynamicImage,
-    spritesheet: &RgbaImage,
-) -> Vec<u32> {
+pub fn test_diff(state: &State, shapes: &[Shape], target: &DynamicImage) -> Vec<i32> {
     let mut encoder = state
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
-    let input_shapes = shapes
-        .iter()
-        .enumerate()
-        .map(|(i, shape)| {
-            encoder.copy_texture_to_texture(
-                state.output_texture.texture.as_image_copy(),
-                wgpu::ImageCopyTextureBase {
-                    texture: &state.temp_texture.texture,
-                    mip_level: 0,
-                    origin: Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: i as u32,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: state.size_uniform.width as u32,
-                    height: state.size_uniform.height as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
-
-            let view = state
-                .temp_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: i as u32,
-                    array_layer_count: Some(std::num::NonZeroU32::new(1).unwrap()),
-                    ..Default::default()
-                });
-            (*shape, view)
-        })
-        .collect::<Vec<_>>();
-
-    Shape::paste(&input_shapes, state, target, spritesheet, &mut encoder);
-
-    let view3d = state
-        .temp_texture
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-
-    image_diff::calc_image_diff(state, &mut encoder, &view3d);
-
-    // encoder.copy_texture_to_texture(
-    //     wgpu::ImageCopyTexture {
-    //         aspect: wgpu::TextureAspect::All,
-    //         texture: &state.temp_texture.texture,
-    //         mip_level: 0,
-    //         origin: wgpu::Origin3d::ZERO,
-    //     },
-    //     wgpu::ImageCopyTexture {
-    //         aspect: wgpu::TextureAspect::All,
-    //         texture: &state.output_texture.texture,
-    //         mip_level: 0,
-    //         origin: wgpu::Origin3d::ZERO,
-    //     },
-    //     wgpu::Extent3d {
-    //         width: state.size_uniform.width as u32,
-    //         height: state.size_uniform.height as u32,
-    //         depth_or_array_layers: 1,
-    //     },
-    // );
+    Shape::test_diff(shapes, state, target, &mut encoder);
 
     state.queue.submit(std::iter::once(encoder.finish()));
 
-    pollster::block_on(image_diff::get_image_diff(state)).to_vec()
+    pollster::block_on(get_image_diff(state)).to_vec()
+}
+
+pub async fn get_image_diff(state: &State) -> [i32; TOTAL_SHAPES] {
+    let buffer_slice = state.tint_buffer.slice(..);
+
+    let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
+    state.device.poll(wgpu::Maintain::Wait);
+    mapping.await.unwrap();
+
+    let data: TintBuffer = *bytemuck::from_bytes(&buffer_slice.get_mapped_range().to_vec());
+    state.tint_buffer.unmap();
+    data.diff
+}
+
+pub async fn get_tint(state: &State, index: usize) -> [f32; 3] {
+    let buffer_slice = state.tint_buffer.slice(..);
+
+    let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
+    state.device.poll(wgpu::Maintain::Wait);
+    mapping.await.unwrap();
+
+    let data: TintBuffer = *bytemuck::from_bytes(&buffer_slice.get_mapped_range().to_vec());
+    state.tint_buffer.unmap();
+    data.tint[index].map(|x| x as f32 / data.counts[index] as f32)
 }
