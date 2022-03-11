@@ -16,7 +16,7 @@ struct VertexOutput {
     [[location(2)]] target_coords: vec2<f32>;
 };
 
-let total_shapes = 512;
+let total_shapes = 2048;
 
 let factor = 1000.0;
 struct Tint {
@@ -69,9 +69,9 @@ var s_diffuse: sampler;
 fn fs_find_avg_color(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let tex = textureSample(t_diffuse, s_diffuse, in.tex_coords);
     let target = textureSample(t_target, s_target, in.target_coords);
-    let fac = f32(in.target_coords.x > -1.0
+    let fac = f32(in.target_coords.x > 0.0
         && in.target_coords.x < 1.0 
-        && in.target_coords.y > -1.0 
+        && in.target_coords.y > 0.0 
         && in.target_coords.y < 1.0);
        
     let a = tex.a;
@@ -112,14 +112,14 @@ fn fs_find_diff(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let target = textureSample(t_target, s_target, in.target_coords).rgb;
     let current = textureSample(t_current, s_current, in.target_coords).rgb;
 
-    let next = t.rgb + current * (1.0 - t.a);
+    let next = color.rgb * color.a + current * (1.0 - color.a);
 
     let diff = color_diff(target, next) - color_diff(target, current);
         
     let fac = f32(c > 0.0 
-        && in.target_coords.x > -1.0
+        && in.target_coords.x > 0.0
         && in.target_coords.x < 1.0 
-        && in.target_coords.y > -1.0 
+        && in.target_coords.y > 0.0
         && in.target_coords.y < 1.0);
         
     atomicAdd(&tint.diff[in.tint_index], i32(255.0 * diff * fac));

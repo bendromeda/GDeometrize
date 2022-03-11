@@ -4,6 +4,7 @@ use crate::OPACITY;
 
 use crate::TintBuffer;
 
+use crate::process::ADJUSTMENTS;
 use crate::process::OBJ_IDS;
 use crate::process::TOTAL_SHAPES;
 use crate::State;
@@ -27,7 +28,16 @@ pub struct Shape {
 // and then it grabs all the images and packs them into a texture at runtime
 // no i got the thing you sent in chat a few weeks ago
 pub(crate) fn pack_textures<'a>() -> TexturePacker<'a, RgbaImage, u16> {
-    let mut packer = TexturePacker::new_skyline(Default::default());
+    let mut packer = TexturePacker::new_skyline(TexturePackerConfig {
+        max_width: 2048,
+        max_height: 2048,
+        allow_rotation: false,
+        border_padding: 0,
+        texture_padding: 2,
+        texture_extrusion: 0,
+        trim: false,
+        texture_outlines: false,
+    });
 
     for id in OBJ_IDS {
         let texture = image::open(&format!("objects/{}/main.png", id))
@@ -39,6 +49,7 @@ pub(crate) fn pack_textures<'a>() -> TexturePacker<'a, RgbaImage, u16> {
     packer
 }
 
+use texture_packer::TexturePackerConfig;
 use wgpu::util::DeviceExt;
 
 impl Shape {
@@ -101,12 +112,7 @@ impl Shape {
         (positions, tex_coords)
     }
 
-    pub(crate) fn test_diff(
-        shapes: &[Shape],
-        state: &State,
-        target: &DynamicImage,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+    pub(crate) fn test_diff(shapes: &[Shape], state: &State, encoder: &mut wgpu::CommandEncoder) {
         // println!("{:?}", avg_color);
         // if average[0].is_nan() {
         //     panic!(
@@ -141,7 +147,10 @@ impl Shape {
                     position: [p[0] as i32, p[1] as i32],
                     tex_coords: [t[0], t[1]],
                     tint_index: i as i32,
-                    target_coords: [p[0] / target.width() as f32, p[1] / target.height() as f32],
+                    target_coords: [
+                        p[0] / state.target_size.width as f32,
+                        p[1] / state.target_size.height as f32,
+                    ],
                 })
                 .collect::<Vec<_>>();
 
@@ -186,7 +195,6 @@ impl Shape {
     pub(crate) fn paste(
         &self,
         state: &State,
-        target: &DynamicImage,
         //encoder: &mut wgpu::CommandEncoder,
         tint_index: usize,
     ) {
@@ -201,10 +209,13 @@ impl Shape {
             .iter()
             .zip(tex_coords.iter())
             .map(|(p, t)| Vertex {
-                position: [p[0] as i32, p[1] as i32],
+                position: [p[0] as i32, p[1] as i32], // scaling?
                 tex_coords: [t[0], t[1]],
                 tint_index: tint_index as i32,
-                target_coords: [p[0] / target.width() as f32, p[1] / target.height() as f32],
+                target_coords: [
+                    p[0] / state.target_size.width as f32,
+                    p[1] / state.target_size.height as f32,
+                ],
             })
             .collect::<Vec<_>>();
 
@@ -258,11 +269,15 @@ impl Shape {
         }
     }
 
-    pub(crate) fn adjust_random(&mut self) {
-        self.x += rand::thread_rng().gen_range(-3i32..=3);
-        self.y += rand::thread_rng().gen_range(-3i32..=3);
-        self.scale *= rand::thread_rng().gen_range(0.9..1.1);
-        self.rot += rand::thread_rng().gen_range(-0.1..0.1);
+    pub(crate) fn adjust_random(&mut self, divisor: usize) {
+        let d = (ADJUSTMENTS - divisor) as f32 / ADJUSTMENTS as f32;
+        self.x += (rand::thread_rng().gen_range(-10i32..=10) as f32 * d) as i32;
+        self.y += (rand::thread_rng().gen_range(-10i32..=10) as f32 * d) as i32;
+        self.scale += rand::thread_rng().gen_range(-0.2..0.2) * d;
+        if self.scale < 0.1 {
+            self.scale = 0.1;
+        }
+        self.rot += rand::thread_rng().gen_range(-0.5..0.5) * d;
     }
 
     pub(crate) fn to_obj_string(self, r: f32, g: f32, b: f32, layer: usize) -> String {

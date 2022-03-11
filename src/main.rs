@@ -23,12 +23,20 @@ pub(crate) fn lin(c: f32) -> f32 {
 
 async fn run() {
     env_logger::init();
-    let width = 512;
+    let width = 360;
     let img = image::open(TARGET).unwrap();
     let aspect_ratio = img.width() as f32 / img.height() as f32;
     let height: u32 = (width as f32 * aspect_ratio) as u32;
 
     let mut target = img.resize(width, height, FilterType::Triangle);
+    let target_size = Size {
+        width: target.width(),
+        height: target.height(),
+    };
+    let output_size = Size {
+        width: 1024,
+        height: (1024.0 / aspect_ratio) as u32,
+    };
     // get average color of target image
     let mut r = 0.0;
     let mut g = 0.0;
@@ -39,9 +47,9 @@ async fn run() {
         g += lin(pixel.2[1] as f32 / 255.0);
         b += lin(pixel.2[2] as f32 / 255.0);
     }
-    r /= target.width() as f32 * target.height() as f32;
-    g /= target.width() as f32 * target.height() as f32;
-    b /= target.width() as f32 * target.height() as f32;
+    r /= target_size.width as f32 * target_size.height as f32;
+    g /= target_size.width as f32 * target_size.height as f32;
+    b /= target_size.width as f32 * target_size.height as f32;
     let avg_color = [r, g, b];
 
     // convert this image from srgb to linear
@@ -95,8 +103,8 @@ async fn run() {
 
     let texture_desc = wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: target.width(),
-            height: target.height(),
+            width: target_size.width,
+            height: target_size.height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -110,7 +118,14 @@ async fn run() {
         label: None,
     };
 
-    let output_texture = device.create_texture(&texture_desc);
+    let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+        size: wgpu::Extent3d {
+            width: output_size.width,
+            height: output_size.height,
+            depth_or_array_layers: 1,
+        },
+        ..texture_desc
+    });
     let output_texture_view = output_texture.create_view(&Default::default());
 
     let dummy_texture = device.create_texture(&texture_desc);
@@ -159,7 +174,8 @@ async fn run() {
 
     let u32_size = std::mem::size_of::<u32>() as u32;
 
-    let output_buffer_size = (u32_size * target.width() * target.height()) as wgpu::BufferAddress;
+    let output_buffer_size =
+        (u32_size * output_size.width * output_size.height) as wgpu::BufferAddress;
     let output_buffer_desc = wgpu::BufferDescriptor {
         size: output_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST
@@ -176,8 +192,13 @@ async fn run() {
 
     //let spritesheet = exporter.as_rgba8().unwrap().clone();
 
-    let sheet_texture =
-        texture::Texture::from_bytes(&device, &queue, exporter, "sheet.png").unwrap();
+    let sheet_texture = texture::Texture::from_image(
+        &device,
+        &queue,
+        &exporter,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    )
+    .unwrap();
 
     let sheet_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -218,7 +239,8 @@ async fn run() {
     });
 
     let target_texture =
-        texture::Texture::from_bytes(&device, &queue, target.clone(), TARGET).unwrap();
+        texture::Texture::from_image(&device, &queue, &target, wgpu::TextureFormat::Rgba8Unorm)
+            .unwrap();
 
     let target_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -428,6 +450,9 @@ async fn run() {
         // temp_texture,
         // temp_texture_bind_group_layout,
         dummy_texture_view,
+        output_buffer,
+        target_size,
+        output_size,
     };
 
     let mut encoder = state
@@ -457,29 +482,38 @@ async fn run() {
 
     state.queue.submit(Some(encoder.finish()));
 
-    process::process(&state, &target, avg_color);
+    pollster::block_on(process::process(&state, avg_color));
 
+    render(&state, "output.png").await;
+}
+
+pub async fn render<P>(state: &State, path: P)
+where
+    P: AsRef<std::path::Path>,
+{
+    let u32_size = std::mem::size_of::<u32>() as u32;
     let mut encoder = state
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
     encoder.copy_texture_to_buffer(
         state.output_texture.texture.as_image_copy(),
         wgpu::ImageCopyBuffer {
-            buffer: &output_buffer,
+            buffer: &state.output_buffer,
             layout: wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some((u32_size * target.width()).try_into().unwrap()),
-                rows_per_image: Some(target.height().try_into().unwrap()),
+                bytes_per_row: Some((u32_size * state.output_size.width).try_into().unwrap()),
+                rows_per_image: Some(state.output_size.height.try_into().unwrap()),
             },
         },
-        texture_desc.size,
+        wgpu::Extent3d {
+            width: state.output_size.width,
+            height: state.output_size.height,
+            depth_or_array_layers: 1,
+        },
     );
-
     state.queue.submit(Some(encoder.finish()));
-
     {
-        let buffer_slice = output_buffer.slice(..);
+        let buffer_slice = state.output_buffer.slice(..);
 
         // NOTE: We have to create the mapping THEN device.poll() before await
         // the future. Otherwise the application will freeze.
@@ -490,14 +524,23 @@ async fn run() {
         let data = buffer_slice.get_mapped_range();
 
         use image::{ImageBuffer, Rgba};
-        let buffer =
-            ImageBuffer::<Rgba<u8>, _>::from_raw(target.width(), target.height(), data).unwrap();
-        buffer.save("output.png").unwrap();
+        let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(
+            state.output_size.width,
+            state.output_size.height,
+            data,
+        )
+        .unwrap();
+        buffer.save(path).unwrap();
     }
-    output_buffer.unmap();
+    state.output_buffer.unmap();
 }
 
 // mod image_diff;
+
+pub struct Size {
+    pub width: u32,
+    pub height: u32,
+}
 
 pub struct State {
     device: wgpu::Device,
@@ -519,10 +562,13 @@ pub struct State {
     output_texture: texture::Texture,
     output_texture_bind_group: wgpu::BindGroup,
     dummy_texture_view: wgpu::TextureView,
+    target_size: Size,
+    output_size: Size,
     // diff_storage_buffer: wgpu::Buffer,
     // diff_bind_group: wgpu::BindGroup,
     // temp_texture: texture::Texture,
     // temp_texture_bind_group_layout: wgpu::BindGroupLayout,
+    output_buffer: wgpu::Buffer,
 }
 
 mod process;
